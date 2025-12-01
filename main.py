@@ -5,152 +5,11 @@ from scipy.signal import find_peaks
 from braille_map import braille_to_char
 import os
 import pandas as pd
-
-def add_padding(img, padding_height, padding_width):
-    h, w = img.shape
-
-    padded_img = np.zeros((h + padding_height * 2, w + padding_width * 2))
-    padded_img[padding_height : h + padding_height, padding_width : w + padding_width] = img
-
-    return padded_img
-
-def erosion_conv(img, kernel, floatOut=False):
-    # Get dimensions of the kernel
-    k_height, k_width = kernel.shape
-
-    # Get dimensions of the image
-    img_height, img_width = img.shape
-
-    # Calculate padding required
-    pad_height = k_height // 2
-    pad_width = k_width // 2
-
-    # Create a padded version of the image to handle edges
-    img = add_padding(img, pad_height, pad_width)
-
-    # Initialize an output image with zeros
-    output = np.zeros((img_height, img_width), dtype=float)
-
-    # Perform convolution
-
-    # print(f"Height: {img_height}")
-    # print(f"Width: {img_width}")
-
-    # Iterate only on original image
-    for i in range(pad_height, img_height + pad_height):
-        for j in range(pad_width, img_width + pad_width):
-            accumulation = 0
-            isContained = True
-            for u in range(k_height):
-                for v in range(k_width):
-                    kernel_pixel = kernel[u,v]
-                    img_pixel = img[i - pad_height + u, j - pad_width + v]
-                    if kernel_pixel == 1 and img_pixel != 255:
-                        isContained = False
-                        break
-                if not isContained:
-                    break
-            output[i-pad_height,j-pad_width] = img[i-pad_height,j-pad_width] if isContained else 0
-    if(floatOut):
-      return output
-    else:
-      return np.array(output, dtype=np.uint8)
-
-def dilatation_conv(img, kernel, floatOut=False):
-    # Get dimensions of the kernel
-    k_height, k_width = kernel.shape
-
-    # Get dimensions of the image
-    img_height, img_width = img.shape
-
-    # Calculate padding required
-    pad_height = k_height // 2
-    pad_width = k_width // 2
-
-    # Create a padded version of the image to handle edges
-    img = add_padding(img, pad_height, pad_width)
-
-    # Initialize an output image with zeros
-    output = np.zeros((img_height, img_width), dtype=float)
-
-    # Perform convolution
-
-    # print(f"Height: {img_height}")
-    # print(f"Width: {img_width}")
-
-    # Iterate only on original image
-    for i in range(pad_height, img_height + pad_height):
-        for j in range(pad_width, img_width + pad_width):
-            if(img[i, j] != 255):
-              continue
-
-            for u in range(-k_height // 2, k_height // 2):
-                for v in range(-k_width // 2, k_width // 2):
-                    kernel_pixel = kernel[u + k_height // 2, v + k_width // 2]
-
-                    out_i = i + u - k_height // 2 + 1
-                    out_j = j + v - k_width // 2 + 1
-
-                    if out_i < img_height and out_j < img_width and (kernel_pixel == 1 or img[out_i, out_j] == 255):
-                      output[out_i, out_j] = 255
-    if(floatOut):
-      return output
-    else:
-      return np.array(output, dtype=np.uint8)
-    
-
-def opening(img, kernel):
-  return dilatation_conv(erosion_conv(img, kernel), kernel)
+from conv import opening, closing
+from cdf import binarize_with_cdf
+from utils import black_white_conversion
 
 
-def closing(img, kernel):
-  return erosion_conv(dilatation_conv(img, kernel), kernel)
-
-
-def black_white_conversion(image, threshold):
-    image = image.copy()
-    for i in range(image.shape[0]):
-        for j in range(image.shape[1]):
-            if image[i, j] < threshold:
-                image[i, j] = 255
-            else:
-                image[i, j] = 0
-    return image
-
-def calc_hist(image):
-    hist = [0] * 256
-    for i in range(image.shape[0]): 
-        for j in range(image.shape[1]): 
-            hist[image[i, j]] += 1 
-    return np.array(hist)
-
-def calculate_cdf(hist):
-    cdf = np.array([])
-    for i in range(len(hist)):
-        if i == 0:
-            cdf = np.append(cdf, hist[i])
-        else:
-            cdf = np.append(cdf, cdf[i-1] + hist[i])
-    return cdf
-
-def get_threshold(cdf, v):
-    threshold = 0
-    for i in range(len(cdf)):
-        if cdf[i] >= v:
-            threshold = i
-            break
-    return threshold
-
-def binarize_with_cdf(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-    hist = calc_hist(gray)
-    cdf = calculate_cdf(hist)
-    cdf_norm = cdf / cdf[-1]
-
-    threshold = get_threshold(cdf_norm, 0.1)
-    return black_white_conversion(gray, threshold)
-     
 def detect_dot_bounds(binary, y, x):
     H, W = binary.shape
 
@@ -231,69 +90,9 @@ def rotate(img, angle, borderValue):
     h, w = img.shape[:2]
     M = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
     return cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderValue=borderValue)
-    
-def find_braille_orientation(img):
-    """
-    Detect rotation of Braille cell using pairwise dot-angle clustering.
-    Works even when dots are circles with no linear structure.
-    Expects img to be binary: dots = 255, background = 0.
-    Returns angle (degrees) to apply to correct orientation.
-    """
 
-    # detect contours for dot centers
-    if img.ndim == 3:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = img.copy()
-
-    _, bw = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
-
-    contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    centers = []
-    for c in contours:
-        area = cv2.contourArea(c)
-        if area < 10:
-            continue
-        M = cv2.moments(c)
-        if M["m00"] == 0:
-            x,y,w,h = cv2.boundingRect(c)
-            cx = x + w/2
-            cy = y + h/2
-        else:
-            cx = M["m10"]/M["m00"]
-            cy = M["m01"]/M["m00"]
-        centers.append((cx,cy))
-
-    if len(centers) < 2:
-        return 0  # no data
-
-    # compute all pairwise angles
-    angles = []
-    for i in range(len(centers)):
-        for j in range(i+1, len(centers)):
-            x1, y1 = centers[i]
-            x2, y2 = centers[j]
-            dx = x2 - x1
-            dy = y2 - y1
-            angle = np.degrees(np.arctan2(dy, dx))
-            # normalize to [-90, 90]
-            if angle < -90: angle += 180
-            if angle > 90:  angle -= 180
-            angles.append(angle)
-
-    if len(angles) == 0:
-        return 0
-
-    # cluster around the dominant orientation
-    hist, bins = np.histogram(angles, bins=180, range=(-90,90))
-    dominant_angle = bins[np.argmax(hist)]
-
-    # rotate image by negative of observed angle
-    return -dominant_angle
-
-def detect_rotation(centers):
-    print(centers)
+def detect_rotation(centers, to_rotate):                        
+    # print(centers)
     #centers is list of 6 (x,y) tuples and we want to find rotation angle of braille cell
     angles = []
     for i in range(len(centers)):
@@ -310,7 +109,42 @@ def detect_rotation(centers):
     if len(angles) == 0:
         return 0
     hist, bins = np.histogram(angles, bins=180, range=(-90,90))
+    
     angle = bins[np.argmax(hist)]
+    # print("Detected angle:", angle)
+
+    #display histogram
+    # plt.hist(angles, bins=180, range=(-90,90))
+    # plt.title("Pairwise Dot Angle Histogram")
+    # plt.xlabel("Angle (degrees)")
+    # plt.ylabel("Frequency")
+    # plt.axvline(x=angle, color='r', linestyle='--')
+    # plt.show()
+
+
+    #Now the braile may be horizontally aligned aligned, in that case we need to rotate by 90 degrees or -90 degrees
+    rotated_bin = rotate(to_rotate, angle, (0,0,0))
+    contours, _ = cv2.findContours(rotated_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    centers_rotated = []
+    for c in contours:
+        M = cv2.moments(c)
+        if M["m00"] == 0:
+            continue
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        centers_rotated.append((cx, cy))
+        cv2.circle(rotated_bin, (cx, cy), 0, (128))
+    # print("Centers rotated:", centers_rotated)
+    x_coords = [c[0] for c in centers_rotated]
+    x_range = max(x_coords) - min(x_coords)
+    y_coords = [c[1] for c in centers_rotated]
+    y_range = max(y_coords) - min(y_coords)
+    # print("X range:", x_range, "Y range:", y_range)
+    if y_range < x_range:
+        if angle > 0:
+            angle -= 90
+        else:
+            angle += 90
 
 
 
@@ -319,8 +153,8 @@ def detect_rotation(centers):
 def rotate_original(to_rotate, centers, image):
     #to_rotate is binary braille image with every dot shown just to find orientation
 
-    angle = detect_rotation(centers)
-    print("Raw angle:", angle)
+    angle = detect_rotation(centers, to_rotate)
+    # print("Raw angle:", angle)
 
     rotated_original = rotate(image, angle, (255, 255, 255))
     rotated_bin = rotate(to_rotate, angle, (0,0,0))
@@ -328,10 +162,14 @@ def rotate_original(to_rotate, centers, image):
     centers = []
     for c in contours:
         M = cv2.moments(c)
+        if M["m00"] == 0:
+            continue
         cx = int(M["m10"] / M["m00"])
         cy = int(M["m01"] / M["m00"])
         centers.append((cx, cy))
         cv2.circle(rotated_bin, (cx, cy), 0, (128))
+
+    # cv2.imshow("Rotated bin", rotated_bin)
 
 
 
@@ -362,21 +200,23 @@ def detect_braille_dots(binary):
 
     return dots
         
+def process_image(image_path, image_frame=None):
+    if image_frame is not None:
+        original = image_frame
+    else:
+        original = cv2.imread(image_path)
+    original = cv2.resize(original, (40, 40), interpolation=cv2.INTER_AREA)
 
-
-def process_image(image_path):
     kernel = np.ones((3,3), dtype=np.uint8)
-
-    original = cv2.imread(image_path)
 
     gray_mask = cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)
     gray_mask = cv2.equalizeHist(gray_mask)
     gray_mask = cv2.GaussianBlur(gray_mask, (5, 5), 0)
-    to_rotate = black_white_conversion(gray_mask, 100)
+    to_rotate = black_white_conversion(gray_mask, 95)
     open = opening(to_rotate, kernel)
     to_rotate = closing(open, kernel)
-    cv2.imshow("To rotate", to_rotate)
-    cv2.imshow("Gray mask", gray_mask)
+    # cv2.imshow("To rotate", to_rotate)
+    # cv2.imshow("Gray mask", gray_mask)
 
     contours, _ = cv2.findContours(to_rotate, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     centers = []
@@ -388,21 +228,23 @@ def process_image(image_path):
         cy = int(M["m01"] / M["m00"])
         centers.append((cx, cy))
         cv2.circle(to_rotate, (cx, cy), 0, (128))
+    # print(centers)
     
 
     
 
     
-    # (original, centers) = rotate_original(to_rotate, centers, original)
-    contrast = cv2.convertScaleAbs(original, alpha=3, beta=50)
-    contrast = cv2.cvtColor(cv2.equalizeHist(cv2.cvtColor(contrast, cv2.COLOR_BGR2GRAY)), cv2.COLOR_GRAY2BGR)
-    binary = binarize_with_cdf(contrast)
+    (rotated_original, centers) = rotate_original(to_rotate, centers, original)
+    contrast = cv2.convertScaleAbs(rotated_original, alpha=3, beta=50)
+    contrast = cv2.equalizeHist(cv2.cvtColor(contrast, cv2.COLOR_BGR2GRAY))
+    contrast = cv2.GaussianBlur(contrast, (5,5), 0)
+    binary = binarize_with_cdf(cv2.cvtColor(contrast, cv2.COLOR_GRAY2BGR))
     dots = detect_braille_dots(binary)
     # print(dots, original)
     braille_vector = braille_vector_from_dots(dots, centers)
     char = braille_to_char(braille_vector)
 
-    return (char, braille_vector, dots, binary, contrast, original, original, to_rotate)
+    return (char, braille_vector, dots, binary, contrast, original, rotated_original, to_rotate)
 
 def process_all():
     dataset_path = "dataset"
@@ -410,17 +252,17 @@ def process_all():
     for filename in os.listdir(dataset_path):
         if filename.endswith(".jpg"):
             mod = filename.split(".")[1][-3:]  # 3 last chars before extension
-            if mod == "rot":
-                continue  
-            if mod == "whs":
-                continue
+            # if mod == "rot":
+            #     continue  
+            # if mod == "whs":
+            #     continue
             image_path = os.path.join(dataset_path, filename)
             (char, braille_vector, dots, binary, contrast, original, rotated_original, to_rotate) = process_image(image_path)
             correct_char = filename[0]  # first character of filename is the correct one
             result = "correct" if char == correct_char else "wrong"
-            if result == "wrong":
-                print(f"Error in file {filename}: detected '{char}' but expected '{correct_char}'")
-                # break
+            # if result == "wrong":
+            #     print(f"Error in file {filename}: detected '{char}' but expected '{correct_char}'")
+            #     break
             result_dataframe = result_dataframe._append({"filename": filename, "detected_char": char, "correct_char": correct_char, "result": result, "mod": mod}, ignore_index=True)
 
 
@@ -429,24 +271,46 @@ def process_all():
     print(result_dataframe[result_dataframe['result'] == 'wrong'].groupby('mod').size().sort_values(ascending=False))
 
 def main():
-    (char, braille_vector, dots, binary, contrast, original, rotated_original, to_rotate) = process_image("dataset/n1.JPG4dim.jpg")
+    # (char, braille_vector, dots, binary, contrast, original, rotated_original, to_rotate) = process_image("dataset/j1.JPG8rot.jpg")
 
-    binary = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
-    for bounds in dots:
-        x = bounds["w"] // 2 + bounds["x_min"]
-        y = bounds["h"] // 2 + bounds["y_min"]
-        cv2.rectangle(binary, (x, y), (x, y), (0, 255, 0), 1)
+    # binary = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+    # for bounds in dots:
+    #     x = bounds["w"] // 2 + bounds["x_min"]
+    #     y = bounds["h"] // 2 + bounds["y_min"]
+    #     cv2.rectangle(binary, (x, y), (x, y), (0, 255, 0), 1)
 
-    cv2.imshow("Bin", binary)
-    cv2.imshow("Contrast", contrast)
-    cv2.imshow("Original", original)
-    print("Braille Vector", braille_vector)
-    print("Char", char)
+    # cv2.imshow("Bin", binary)
+    # cv2.imshow("Contrast", contrast)
+    # cv2.imshow("Original", original)
+    # print("Braille Vector", braille_vector)
+    # print("Char", char)
 
 
     process_all()
     
 
+
+
+
+    #get cam video and process each frame
+    # while True:
+    #     cap = cv2.VideoCapture(0)
+    #     ret, frame = cap.read()
+    #     if not ret:
+    #         break
+    #     #scale framte to 50x50 mantaining aspect ratio
+    #     frame = cv2.resize(frame, (50, 50 ), interpolation=cv2.INTER_AREA)
+    #     (char, braille_vector, dots, binary, contrast, original, rotated_original, to_rotate) = process_image("", frame)
+    #     for bounds in dots:
+    #         x = bounds["w"] // 2 + bounds["x_min"]
+    #         y = bounds["h"] // 2 + bounds["y_min"]
+    #         cv2.rectangle(rotated_original, (x, y), (x, y), (0, 255, 0), 1)
+    #     print(f"Char: {char}")
+    #     cv2.imshow("Rotated Original", rotated_original)
+    #     cap.release()
+    #     key = cv2.waitKey(1)
+    #     if key == 27:  # ESC key to exit
+    #         break
 
 
     cv2.waitKey(0)
