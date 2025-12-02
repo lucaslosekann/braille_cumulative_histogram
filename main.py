@@ -9,8 +9,10 @@ from conv import opening, closing
 from cdf import binarize_with_cdf
 from utils import black_white_conversion
 import tensorflow as tf
-
-
+from gtts import gTTS
+from io import BytesIO
+from pydub import AudioSegment
+from pydub.playback import play
 
 def detect_dot_bounds(binary, y, x):
     H, W = binary.shape
@@ -94,8 +96,7 @@ def rotate(img, angle, borderValue):
     return cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderValue=borderValue)
 
 def detect_rotation(centers, to_rotate):                        
-    # print(centers)
-    #centers is list of 6 (x,y) tuples and we want to find rotation angle of braille cell
+    
     angles = []
     for i in range(len(centers)):
         for j in range(i+1, len(centers)):
@@ -151,7 +152,7 @@ def detect_rotation(centers, to_rotate):
 
     return angle
 
-def rotate_original(to_rotate, centers, image):
+def rotate_original(to_rotate, centers, image, save):
     #to_rotate is binary braille image with every dot shown just to find orientation
 
     angle = detect_rotation(centers, to_rotate)
@@ -159,7 +160,7 @@ def rotate_original(to_rotate, centers, image):
 
     rotated_original = rotate(image, angle, (255, 255, 255))
     rotated_bin = rotate(to_rotate, angle, (0,0,0))
-    contours, _ = cv2.findContours(to_rotate, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(rotated_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     centers = []
     for c in contours:
         M = cv2.moments(c)
@@ -170,7 +171,9 @@ def rotate_original(to_rotate, centers, image):
         centers.append((cx, cy))
         cv2.circle(rotated_bin, (cx, cy), 0, (128))
 
-    # cv2.imshow("Rotated bin", rotated_bin)
+
+
+    if save: cv2.imwrite("imagens_slide/9 - Rotated bin.png", rotated_bin)
 
 
 
@@ -201,23 +204,29 @@ def detect_braille_dots(binary):
 
     return dots
         
-def process_image(image_path, image_frame=None):
+def process_image(image_path, image_frame=None, save=False):
     if image_frame is not None:
         original = image_frame
     else:
         original = cv2.imread(image_path)
+    if save: cv2.imwrite("imagens_slide/1 - Original.png", original)
     original = cv2.resize(original, (40, 40), interpolation=cv2.INTER_AREA)
-
+    if save: cv2.imwrite("imagens_slide/2 - Resized.png", original)
     kernel = np.ones((3,3), dtype=np.uint8)
 
     gray_mask = cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)
+    if save: cv2.imwrite("imagens_slide/3 - Gray.png", gray_mask)
     gray_mask = cv2.equalizeHist(gray_mask)
+    if save: cv2.imwrite("imagens_slide/4 - Equalized.png", gray_mask)
     gray_mask = cv2.GaussianBlur(gray_mask, (5, 5), 0)
+    if save: cv2.imwrite("imagens_slide/5 - Blurred.png", gray_mask)
     to_rotate = black_white_conversion(gray_mask, 95)
+    # to_rotate = binarize_with_cdf(cv2.cvtColor(gray_mask, cv2.COLOR_GRAY2BGR))
+    if save: cv2.imwrite("imagens_slide/6 - Black and White.png", to_rotate)
     open = opening(to_rotate, kernel)
     to_rotate = closing(open, kernel)
-    # cv2.imshow("To rotate", to_rotate)
-    # cv2.imshow("Gray mask", gray_mask)
+
+    if save: cv2.imwrite("imagens_slide/7 - Morphological.png", to_rotate)
 
     contours, _ = cv2.findContours(to_rotate, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     centers = []
@@ -229,19 +238,30 @@ def process_image(image_path, image_frame=None):
         cy = int(M["m01"] / M["m00"])
         centers.append((cx, cy))
         cv2.circle(to_rotate, (cx, cy), 0, (128))
-    # print(centers)
+
+    if save: cv2.imwrite("imagens_slide/8 - Centers.png", to_rotate)
     
 
     
 
     
-    (rotated_original, centers) = rotate_original(to_rotate, centers, original)
+    (rotated_original, centers) = rotate_original(to_rotate, centers, original, save=save)
+    if save: cv2.imwrite("imagens_slide/10 - Rotated Original.png", rotated_original)
     contrast = cv2.convertScaleAbs(rotated_original, alpha=3, beta=50)
+    if save: cv2.imwrite("imagens_slide/11 - Contrast.png", contrast)
     contrast = cv2.equalizeHist(cv2.cvtColor(contrast, cv2.COLOR_BGR2GRAY))
+    if save: cv2.imwrite("imagens_slide/12 - Equalized Contrast.png", contrast)
     contrast = cv2.GaussianBlur(contrast, (5,5), 0)
+    if save: cv2.imwrite("imagens_slide/13 - Blurred Contrast.png", contrast)
     binary = binarize_with_cdf(cv2.cvtColor(contrast, cv2.COLOR_GRAY2BGR))
+    if save: cv2.imwrite("imagens_slide/14 - Binarized.png", binary)
     dots = detect_braille_dots(binary)
-    # print(dots, original)
+    for bounds in dots:
+        x = bounds["w"] // 2 + bounds["x_min"]
+        y = bounds["h"] // 2 + bounds["y_min"]
+        cv2.rectangle(binary, (x, y), (x, y), (0, 255, 0), 1)
+    if save: cv2.imwrite("imagens_slide/15 - Dots Detected.png", binary)
+
     braille_vector = braille_vector_from_dots(dots, centers)
     char = braille_to_char(braille_vector)
 
@@ -279,8 +299,8 @@ def process_all(method):
     for mod, count in results.items():
         print(f"  {mod}: {count} errors ({(count/len(result_dataframe[result_dataframe['mod'] == mod]) * 100):.2f}%)")
 
-def process_single(image_path, image_frame=None):
-    (char, braille_vector, dots, binary, contrast, original, rotated_original, to_rotate) = process_image(image_path, image_frame)
+def process_single(image_path, image_frame=None, save=False):
+    (char, braille_vector, dots, binary, contrast, original, rotated_original, to_rotate) = process_image(image_path, image_frame, save)
 
     binary = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
     for bounds in dots:
@@ -294,6 +314,13 @@ def process_single(image_path, image_frame=None):
     print("Braille Vector", braille_vector)
     print("Char", char)
 
+    if char is not None:
+        mp3_fp = BytesIO()
+        tts = gTTS(char, lang='pt', tld='com.br')
+        tts.write_to_fp(mp3_fp)
+        sound = AudioSegment.from_file(BytesIO(mp3_fp.getvalue()), format="mp3")
+        play(sound)
+
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
@@ -306,10 +333,12 @@ def cnn_predict(image_path, image_frame=None):
     else:
         img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
 
+    print("Original shape:", img.shape)
 
     img = cv2.resize(img, (28, 28))
     img = np.expand_dims(img, axis=-1)  #  (28,28) -> (28,28,1)
     img = np.expand_dims(img, axis=0)  # (28,28,1) -> (1,28,28,1)
+
     predictions = model.predict(img)
     class_id = np.argmax(predictions, axis=1)[0]
     return chr(ord('a') + class_id)
@@ -326,6 +355,14 @@ def cnn_process_single(image_path, image_frame=None):
     class_id = ord(cnn_predict("", img)) - ord('a')
 
     print("Predicted class:", class_id, " | Letter:", chr(ord('a') + class_id))
+
+    mp3_fp = BytesIO()
+    tts = gTTS(chr(ord('a') + class_id), lang='pt', tld='com.br')
+    tts.write_to_fp(mp3_fp)
+    sound = AudioSegment.from_file(BytesIO(mp3_fp.getvalue()), format="mp3")
+    play(sound)
+
+
 
     cv2.waitKey(0)
     cv2.destroyAllWindows()
@@ -346,7 +383,7 @@ def process_camera(method):
             if method == "2":
                 process_single(None, frame)
             else:
-                cnn_process_single(None, frame)
+                cnn_process_single(None, cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
             break
         elif key == 27:  # ESC key to exit
             break
@@ -390,7 +427,7 @@ def menu():
                 continue
 
             if method == "2":
-                process_single(image_path)
+                process_single(image_path, save=True)
             else:
                 cnn_process_single(image_path)
         elif choice == "2":
