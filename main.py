@@ -8,6 +8,8 @@ import pandas as pd
 from conv import opening, closing
 from cdf import binarize_with_cdf
 from utils import black_white_conversion
+import tensorflow as tf
+
 
 
 def detect_dot_bounds(binary, y, x):
@@ -122,7 +124,6 @@ def detect_rotation(centers, to_rotate):
     # plt.show()
 
 
-    #Now the braile may be horizontally aligned aligned, in that case we need to rotate by 90 degrees or -90 degrees
     rotated_bin = rotate(to_rotate, angle, (0,0,0))
     contours, _ = cv2.findContours(rotated_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     centers_rotated = []
@@ -246,8 +247,8 @@ def process_image(image_path, image_frame=None):
 
     return (char, braille_vector, dots, binary, contrast, original, rotated_original, to_rotate)
 
-def process_all():
-    dataset_path = "dataset"
+def process_all(method):
+    dataset_path = "dataset" if method == "2" else "test_dataset"
     result_dataframe = pd.DataFrame(columns=["filename", "detected_char", "correct_char", "result", "mod"])
     for filename in os.listdir(dataset_path):
         if filename.endswith(".jpg"):
@@ -257,7 +258,11 @@ def process_all():
             # if mod == "whs":
             #     continue
             image_path = os.path.join(dataset_path, filename)
-            (char, braille_vector, dots, binary, contrast, original, rotated_original, to_rotate) = process_image(image_path)
+            if method == "2":
+                (char, braille_vector, dots, binary, contrast, original, rotated_original, to_rotate) = process_image(image_path)
+            else:
+                char = cnn_predict(image_path)
+
             correct_char = filename[0]  # first character of filename is the correct one
             result = "correct" if char == correct_char else "wrong"
             # if result == "wrong":
@@ -268,54 +273,163 @@ def process_all():
 
     print(f"Accuracy: {len(result_dataframe[result_dataframe['result'] == 'correct'])/len(result_dataframe) * 100:.2f}%")
     print(f"Most errors by modification: ")
-    print(result_dataframe[result_dataframe['result'] == 'wrong'].groupby('mod').size().sort_values(ascending=False))
+    results = result_dataframe[result_dataframe['result'] == 'wrong'].groupby('mod').size().sort_values(ascending=False)
 
-def main():
-    # (char, braille_vector, dots, binary, contrast, original, rotated_original, to_rotate) = process_image("dataset/j1.JPG8rot.jpg")
+    print("Mod:")
+    for mod, count in results.items():
+        print(f"  {mod}: {count} errors ({(count/len(result_dataframe[result_dataframe['mod'] == mod]) * 100):.2f}%)")
 
-    # binary = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
-    # for bounds in dots:
-    #     x = bounds["w"] // 2 + bounds["x_min"]
-    #     y = bounds["h"] // 2 + bounds["y_min"]
-    #     cv2.rectangle(binary, (x, y), (x, y), (0, 255, 0), 1)
+def process_single(image_path, image_frame=None):
+    (char, braille_vector, dots, binary, contrast, original, rotated_original, to_rotate) = process_image(image_path, image_frame)
 
-    # cv2.imshow("Bin", binary)
-    # cv2.imshow("Contrast", contrast)
-    # cv2.imshow("Original", original)
-    # print("Braille Vector", braille_vector)
-    # print("Char", char)
+    binary = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+    for bounds in dots:
+        x = bounds["w"] // 2 + bounds["x_min"]
+        y = bounds["h"] // 2 + bounds["y_min"]
+        cv2.rectangle(binary, (x, y), (x, y), (0, 255, 0), 1)
 
-
-    process_all()
-    
-
-
-
-
-    #get cam video and process each frame
-    # while True:
-    #     cap = cv2.VideoCapture(0)
-    #     ret, frame = cap.read()
-    #     if not ret:
-    #         break
-    #     #scale framte to 50x50 mantaining aspect ratio
-    #     frame = cv2.resize(frame, (50, 50 ), interpolation=cv2.INTER_AREA)
-    #     (char, braille_vector, dots, binary, contrast, original, rotated_original, to_rotate) = process_image("", frame)
-    #     for bounds in dots:
-    #         x = bounds["w"] // 2 + bounds["x_min"]
-    #         y = bounds["h"] // 2 + bounds["y_min"]
-    #         cv2.rectangle(rotated_original, (x, y), (x, y), (0, 255, 0), 1)
-    #     print(f"Char: {char}")
-    #     cv2.imshow("Rotated Original", rotated_original)
-    #     cap.release()
-    #     key = cv2.waitKey(1)
-    #     if key == 27:  # ESC key to exit
-    #         break
-
+    cv2.imshow("Bin", binary)
+    cv2.imshow("Contrast", contrast)
+    cv2.imshow("Original", original)
+    print("Braille Vector", braille_vector)
+    print("Char", char)
 
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-if __name__ == "__main__":
+    
+def cnn_predict(image_path, image_frame=None):
+    global model
 
-    main()
+    if image_frame is not None:
+        img = image_frame
+    else:
+        img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+
+
+    img = cv2.resize(img, (28, 28))
+    img = np.expand_dims(img, axis=-1)  #  (28,28) -> (28,28,1)
+    img = np.expand_dims(img, axis=0)  # (28,28,1) -> (1,28,28,1)
+    predictions = model.predict(img)
+    class_id = np.argmax(predictions, axis=1)[0]
+    return chr(ord('a') + class_id)
+
+
+def cnn_process_single(image_path, image_frame=None):
+    if image_frame is not None:
+        img = image_frame
+    else:
+        img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+
+    cv2.imshow("Input", cv2.resize(img, (200, 200), interpolation=cv2.INTER_NEAREST))
+
+    class_id = ord(cnn_predict("", img)) - ord('a')
+
+    print("Predicted class:", class_id, " | Letter:", chr(ord('a') + class_id))
+
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
+def process_camera(method):
+    cap = cv2.VideoCapture(0)
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame = cv2.resize(frame, (40, 40 ), interpolation=cv2.INTER_AREA)
+        cv2.imshow("Frame", frame)
+        #wait for key press to process
+        key = cv2.waitKey(1)
+        if key == ord('p'):
+            if method == "2":
+                process_single(None, frame)
+            else:
+                cnn_process_single(None, frame)
+            break
+        elif key == 27:  # ESC key to exit
+            break
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+
+
+def menu():
+    # Passar o path da imagem
+    #    - CNN
+    #    - Histograma
+    # Tirar foto com a camera
+    #    - CNN
+    #    - Histograma
+    # Rodar dataset de testes
+    #    - CNN
+    #    - Histograma
+    
+
+    while True:
+        #Clear console
+        print("\033c", end="")
+
+        print("Menu:")
+        print("1. Processar imagem (path)")
+        print("2. Processar imagem (camera)")
+        print("3. Rodar dataset de testes")
+        print("4. Sair")
+        choice = input("Escolha uma opcao: ")
+        if choice == "1":
+            method = get_method_choice()
+            if method == "3":
+                continue
+            image_path = input("Digite o path da imagem: ")
+
+            if not os.path.isfile(image_path):
+                print("Arquivo nao encontrado. Tente novamente.")
+                input("Pressione Enter para continuar...")
+                continue
+
+            if method == "2":
+                process_single(image_path)
+            else:
+                cnn_process_single(image_path)
+        elif choice == "2":
+            method = get_method_choice()
+            if method == "3":
+                continue
+
+            process_camera(method)
+        elif choice == "3":
+            method = get_method_choice()
+            if method == "3":
+                continue
+
+            print("Rodando dataset de testes...")
+            process_all(method)
+            input("Pressione Enter para continuar...")
+          
+        elif choice == "4":
+            print("Saindo...")
+            break
+        else:
+            print("Opcao invalida. Tente novamente.")
+
+def get_method_choice():
+    while True:
+        print("\033c", end="")
+        print("Escolha o metodo de reconhecimento:")
+        print("1. CNN")
+        print("2. Histograma")
+        print("3. Voltar")
+        method = input("Escolha uma opcao: ")
+        if method in ["1", "2", "3"]:
+            return method
+        else:
+            print("Opcao invalida. Tente novamente.")
+
+
+if __name__ == "__main__":
+    global model
+    model = tf.keras.models.load_model("./braille_cnn.keras")
+    menu()
+    # main()
